@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#1b2545">
+<title>わからない — Tsutawari</title>
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f6f8;
+    --fg: #14141a;
+    --muted: #6a6a76;
+    --button: #2f6df6;
+    --button-pressed: #1f4fc0;
+    --disabled: #b6b8c2;
+    --ok: #1f8a4c;
+    --ng: #c0392b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101014;
+      --fg: #f2f2f5;
+      --muted: #9a9aa6;
+      --disabled: #4a4a55;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;               /* 縦に短く。スクロールさせない */
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    padding: max(24px, env(safe-area-inset-top)) 20px max(28px, env(safe-area-inset-bottom));
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  header { text-align: center; padding-top: 8px; }
+  h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
+  .lead { font-size: 14px; color: var(--muted); margin: 0; }
+
+  /* ボタンは親指の届く下寄りに、大きく置く */
+  main {
+    width: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex: 1;
+  }
+
+  /* 1個なら大きな丸、2〜4個なら縦に積む。どの数でもスクロールさせない */
+  #buttons {
+    width: 100%;
+    display: grid;
+    gap: 12px;
+    justify-items: center;
+  }
+  #buttons.count-1 { grid-template-columns: 1fr; }
+  #buttons.count-2, #buttons.count-3, #buttons.count-4 { grid-template-columns: 1fr; }
+
+  .press {
+    touch-action: manipulation;
+    appearance: none;
+    border: none;
+    color: #fff;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    width: 100%;
+    transition: transform 0.08s ease, filter 0.15s ease;
+  }
+  .press:active:not(:disabled) { transform: scale(0.96); filter: brightness(0.88); }
+  .press:disabled { background: var(--disabled) !important; box-shadow: none; cursor: default; }
+
+  /* 伝わっていない=暖色 / 伝わっている=寒色。赤緑は使わない */
+  .press.negative { background: #d97522; box-shadow: 0 8px 24px rgba(217, 117, 34, 0.32); }
+  .press.positive { background: #2678c7; box-shadow: 0 8px 24px rgba(38, 120, 199, 0.32); }
+
+  /* 1個のときだけ丸く大きく */
+  #buttons.count-1 .press {
+    border-radius: 999px;
+    width: min(78vw, 300px);
+    aspect-ratio: 1;
+    font-size: 30px;
+  }
+  #buttons.count-2 .press { border-radius: 24px; height: 21vh; min-height: 110px; font-size: 26px; }
+  #buttons.count-3 .press { border-radius: 20px; height: 15vh; min-height: 84px; font-size: 23px; }
+  #buttons.count-4 .press { border-radius: 18px; height: 12vh; min-height: 68px; font-size: 21px; }
+
+  footer { min-height: 48px; text-align: center; }
+  #status { font-size: 15px; margin: 0; min-height: 22px; }
+  #status.ok { color: var(--ok); }
+  #status.ng { color: var(--ng); }
+  #code { font-size: 12px; color: var(--muted); margin: 6px 0 0; letter-spacing: 0.12em; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="heading">読み込んでいます…</h1>
+  <p class="lead">発表者には、終わってからまとめて届きます</p>
+</header>
+
+<main>
+  <div id="buttons"></div>
+</main>
+
+<footer>
+  <p id="status"></p>
+  <p id="code"></p>
+</footer>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---- 設定（発表者アプリの SupabaseConfiguration と同じ値にする） ----
+  // publishable key はここに書いてよい。守っているのは鍵ではなく RLS。
+  // sb_secret_... と service_role は絶対に置かない。
+  const SUPABASE_URL = "https://fzkfezltxcabwzqrjwhe.supabase.co";
+  const PUBLISHABLE_KEY = "sb_publishable_HoE0LuoeHV8lLyM_6ZqejA_XwUM-Fjq";
+
+  const COOLDOWN_MS = 10000;   // 1人の連打が「多数がつまずいた」に化けるのを防ぐ
+
+  const container = document.getElementById("buttons");
+  const heading = document.getElementById("heading");
+  const status = document.getElementById("status");
+  const codeLabel = document.getElementById("code");
+
+  const setStatus = (text, kind) => {
+    status.textContent = text;
+    status.className = kind || "";
+  };
+
+  // publishable key は JWT ではないので apikey ヘッダーにだけ載せる。
+  // Authorization: Bearer に入れると JWT として検証されて失敗する。
+  const headers = {
+    "apikey": PUBLISHABLE_KEY,
+    "Content-Type": "application/json"
+  };
+
+  const rawCode = new URLSearchParams(location.search).get("s") || "";
+  const code = rawCode.trim().toUpperCase();
+
+  let sessionId = null;      // 開始前は null
+  let buttons = [];          // 発表者が決めたボタン
+  let cooling = false;       // クールダウン中は全ボタンを止める
+
+  if (!code) {
+    heading.textContent = "参加コードがありません";
+    setStatus("QRから開き直してください", "ng");
+    return;
+  }
+  codeLabel.textContent = code;
+
+  // コードから部屋を引く。終了済みなら何も返らない。
+  // 開始前でも部屋は見つかる（has_started が false で返る）。
+  const lookup = async () => {
+    const response = await fetch(SUPABASE_URL + "/rest/v1/rpc/lookup_session", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ p_code: code })
+    });
+    if (!response.ok) throw new Error("lookup failed: " + response.status);
+
+    const rows = await response.json();
+    return rows.length ? rows[0] : null;
+  };
+
+  const send = async (kind) => {
+    const response = await fetch(SUPABASE_URL + "/rest/v1/reactions", {
+      method: "POST",
+      headers: Object.assign({ "Prefer": "return=minimal" }, headers),
+      body: JSON.stringify({ session_id: sessionId, kind })
+    });
+    // RLS で弾かれた = まだ始まっていない、または終わっている。
+    // どちらかは lookup し直さないと分からない。
+    if (response.status === 401 || response.status === 403) {
+      throw Object.assign(new Error("rejected"), { rejected: true });
+    }
+    if (!response.ok) throw new Error("insert failed: " + response.status);
+  };
+
+  // ---- 描画 ----
+
+  const render = () => {
+    container.className = "count-" + Math.min(4, Math.max(1, buttons.length));
+    container.replaceChildren(...buttons.map((button) => {
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className = "press " + (button.weight > 0 ? "positive" : "negative");
+      el.textContent = button.label;
+      el.dataset.key = button.key;
+      el.addEventListener("click", () => onPress(button, el));
+      return el;
+    }));
+  };
+
+  const setAllDisabled = (disabled) => {
+    for (const el of container.children) el.disabled = disabled;
+  };
+
+  const restoreLabels = () => {
+    for (const el of container.children) {
+      const button = buttons.find((b) => b.key === el.dataset.key);
+      if (button) el.textContent = button.label;
+    }
+  };
+
+  // 押した本人にだけ効くクールダウン。どのボタンを押しても全部止める
+  // （「わからない」の直後に「わかりやすい」を押せても意味がない）
+  const cooldown = (pressed) => {
+    cooling = true;
+    setAllDisabled(true);
+    let remaining = Math.round(COOLDOWN_MS / 1000);
+    pressed.textContent = remaining;
+
+    const tick = setInterval(() => {
+      remaining -= 1;
+      if (remaining > 0) {
+        pressed.textContent = remaining;
+        return;
+      }
+      clearInterval(tick);
+      cooling = false;
+      restoreLabels();
+      setAllDisabled(false);
+      setStatus("");
+    }, 1000);
+  };
+
+  const showWaiting = () => {
+    sessionId = null;
+    heading.textContent = "まもなく始まります";
+    setAllDisabled(false);      // 押せるが、押すと状態を確認しにいく
+    setStatus("発表が始まるのを待っています");
+  };
+
+  const showReady = () => {
+    heading.textContent = buttons.length > 1
+      ? "感じたものを押してください"
+      : "わからなかったら押してください";
+    setAllDisabled(false);
+    setStatus("");
+  };
+
+  const showClosed = (message) => {
+    sessionId = null;
+    heading.textContent = "終了しました";
+    setAllDisabled(true);
+    setStatus(message, "ng");
+  };
+
+  // ---- 押されたとき ----
+
+  const onPress = async (button, el) => {
+    if (cooling || el.disabled) return;
+
+    // まだ始まっていないなら、押すたびに状態を見に行く（ポーリングはしない）。
+    if (!sessionId) {
+      setAllDisabled(true);
+      setStatus("確認しています…");
+      try {
+        const room = await lookup();
+        if (!room) { showClosed("この発表は終了しました"); return; }
+        if (!room.has_started) { showWaiting(); return; }
+        adopt(room);
+        showReady();
+        setStatus("始まりました。押せます", "ok");
+      } catch (error) {
+        setAllDisabled(false);
+        setStatus("つながりませんでした", "ng");
+      }
+      return;
+    }
+
+    setAllDisabled(true);
+    setStatus("送っています…");
+
+    try {
+      await send(button.key);
+      setStatus("届きました", "ok");
+      if (navigator.vibrate) navigator.vibrate(20);
+      cooldown(el);
+    } catch (error) {
+      if (error.rejected) {
+        const room = await lookup().catch(() => null);
+        if (room && !room.has_started) { showWaiting(); }
+        else { showClosed("この発表は終了しました"); }
+        return;
+      }
+      setStatus("送れませんでした", "ng");
+      setAllDisabled(false);
+    }
+  };
+
+  /// サーバーから来たボタン定義を採用する。壊れていたら既定に落とす。
+  const adopt = (room) => {
+    sessionId = room.session_id;
+    const incoming = Array.isArray(room.reaction_buttons) ? room.reaction_buttons : [];
+    const valid = incoming
+      .filter((b) => b && typeof b.key === "string" && typeof b.label === "string" && b.label.length)
+      .slice(0, 4);
+    buttons = valid.length ? valid : [{ key: "unclear", label: "わからない", weight: -1 }];
+    render();
+  };
+
+  (async () => {
+    setStatus("準備しています…");
+    try {
+      const room = await lookup();
+      if (!room) {
+        heading.textContent = "見つかりませんでした";
+        setStatus("この発表は終了しているか、コードが違います", "ng");
+        return;
+      }
+      adopt(room);
+      if (!room.has_started) { showWaiting(); return; }
+      showReady();
+    } catch (error) {
+      heading.textContent = "つながりませんでした";
+      setStatus("通信を確認してください", "ng");
+    }
+  })();
+})();
+</script>
+
+</body>
+</html>
