@@ -102,6 +102,39 @@
   #buttons.count-3 .press { border-radius: 20px; height: 15vh; min-height: 84px; font-size: 23px; }
   #buttons.count-4 .press { border-radius: 18px; height: 12vh; min-height: 68px; font-size: 21px; }
 
+  /* スタンプ。押した実感はその場のアニメーションで返す（送信結果は待たせない） */
+  #stamps {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-top: 14px;
+  }
+  .stamp {
+    touch-action: manipulation;
+    appearance: none;
+    border: 1px solid var(--disabled);
+    background: transparent;
+    border-radius: 999px;
+    width: 52px;
+    height: 52px;
+    font-size: 24px;
+    line-height: 1;
+    padding: 0;
+    transition: transform 0.12s ease, background 0.15s ease;
+  }
+  .stamp:active { transform: scale(1.25); background: rgba(127, 127, 127, 0.18); }
+  .stamp:disabled { opacity: 0.4; }
+  .stamp.sent { animation: pop 0.4s ease; }
+  @keyframes pop {
+    0% { transform: scale(1); }
+    40% { transform: scale(1.35); }
+    100% { transform: scale(1); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .stamp.sent { animation: none; }
+  }
+
   footer { min-height: 48px; text-align: center; }
   #status { font-size: 15px; margin: 0; min-height: 22px; }
   #status.ok { color: var(--ok); }
@@ -119,6 +152,8 @@
 <main>
   <div id="buttons"></div>
 </main>
+
+<div id="stamps" hidden></div>
 
 <footer>
   <p id="status"></p>
@@ -138,6 +173,7 @@
   const COOLDOWN_MS = 10000;   // 1人の連打が「多数がつまずいた」に化けるのを防ぐ
 
   const container = document.getElementById("buttons");
+  const stampRow = document.getElementById("stamps");
   const heading = document.getElementById("heading");
   const status = document.getElementById("status");
   const codeLabel = document.getElementById("code");
@@ -196,6 +232,48 @@
     if (!response.ok) throw new Error("insert failed: " + response.status);
   };
 
+  // ---- スタンプ ----
+  // 反応（わからない等）とは別物。分析には使わず、その場で流れて消えるだけ。
+  // だから結果を待たせず、押した瞬間にアニメーションで返す。
+
+  const STAMPS = ["\u{1F44F}", "\u{2764}\u{FE0F}", "\u{1F525}", "\u{1F602}", "\u{1F389}", "\u{1F44D}"];
+  const STAMP_GAP_MS = 400;   // 連打は歓迎だが、送りすぎは抑える
+  let lastStampAt = 0;
+
+  const sendStamp = async (symbol) => {
+    const response = await fetch(SUPABASE_URL + "/rest/v1/stamps", {
+      method: "POST",
+      headers: Object.assign({ "Prefer": "return=minimal" }, headers),
+      body: JSON.stringify({ session_id: sessionId, symbol })
+    });
+    if (!response.ok) throw new Error("stamp failed: " + response.status);
+  };
+
+  const buildStamps = () => {
+    stampRow.replaceChildren(...STAMPS.map((symbol) => {
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className = "stamp";
+      el.textContent = symbol;
+      el.setAttribute("aria-label", "スタンプを送る " + symbol);
+      el.addEventListener("click", () => {
+        if (!sessionId) return;
+        const now = Date.now();
+        if (now - lastStampAt < STAMP_GAP_MS) return;
+        lastStampAt = now;
+
+        el.classList.remove("sent");
+        void el.offsetWidth;          // アニメーションを撒き直す
+        el.classList.add("sent");
+        if (navigator.vibrate) navigator.vibrate(8);
+
+        // 失敗しても黙って捨てる。スタンプは届かなくても発表は成立する
+        sendStamp(symbol).catch(() => {});
+      });
+      return el;
+    }));
+  };
+
   // ---- 描画 ----
 
   const render = () => {
@@ -246,6 +324,7 @@
 
   const showWaiting = () => {
     sessionId = null;
+    stampRow.hidden = true;
     heading.textContent = "まもなく始まります";
     setAllDisabled(false);      // 押せるが、押すと状態を確認しにいく
     setStatus("発表が始まるのを待っています");
@@ -257,10 +336,12 @@
       : "わからなかったら押してください";
     setAllDisabled(false);
     setStatus("");
+    stampRow.hidden = false;
   };
 
   const showClosed = (message) => {
     sessionId = null;
+    stampRow.hidden = true;
     heading.textContent = "終了しました";
     setAllDisabled(true);
     setStatus(message, "ng");
@@ -319,6 +400,8 @@
     buttons = valid.length ? valid : [{ key: "unclear", label: "わからない", weight: -1 }];
     render();
   };
+
+  buildStamps();
 
   (async () => {
     setStatus("準備しています…");
