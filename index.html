@@ -529,8 +529,9 @@
   // 発表中は聴衆が聞くべき時間なので、端末に何もさせない。
 
   const WAIT_POLL_MS = 3000;
-  // 発表中は終了を拾うだけなので、急がない。間隔を広く取る
-  const LIVE_POLL_MS = 10000;
+  // 発表が終わってから感想のページに切り替わるまでの待ち。
+  // ここが長いと、終わったのにボタンの画面に取り残される時間が伸びる
+  const LIVE_POLL_MS = 3000;
   const WAIT_GIVE_UP_MS = 20 * 60 * 1000;   // 20分待っても始まらなければ諦める
   let waitTimer = null;
   let liveTimer = null;
