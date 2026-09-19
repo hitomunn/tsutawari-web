@@ -135,6 +135,60 @@
     .stamp.sent { animation: none; }
   }
 
+  /* 発表後の感想フォーム。終了してから出る */
+  #feedback {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    text-align: left;
+  }
+  #feedback h2 { font-size: 15px; font-weight: 600; margin: 0; }
+  #feedback .q { font-size: 13px; color: var(--muted); margin: 0 0 7px; }
+
+  #body {
+    width: 100%;
+    min-height: 96px;
+    padding: 12px;
+    border: 1px solid var(--disabled);
+    border-radius: 12px;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: inherit;
+    font-size: 16px;   /* iOS で拡大されないように16px以上 */
+    line-height: 1.6;
+    resize: none;
+  }
+  #body:focus { outline: 2px solid var(--button); outline-offset: -1px; }
+
+  .delays { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .delay {
+    touch-action: manipulation;
+    appearance: none;
+    border: 1px solid var(--disabled);
+    background: transparent;
+    color: var(--fg);
+    border-radius: 10px;
+    min-height: 46px;
+    font-family: inherit;
+    font-size: 14px;
+  }
+  .delay.on { background: var(--button); border-color: var(--button); color: #fff; font-weight: 700; }
+  .delay.wide { grid-column: span 2; }
+
+  #send {
+    touch-action: manipulation;
+    appearance: none;
+    border: none;
+    border-radius: 12px;
+    min-height: 52px;
+    background: var(--button);
+    color: #fff;
+    font-size: 17px;
+    font-weight: 700;
+  }
+  #send:disabled { background: var(--disabled); }
+
   footer { min-height: 48px; text-align: center; }
   #status { font-size: 15px; margin: 0; min-height: 22px; }
   #status.ok { color: var(--ok); }
@@ -155,6 +209,19 @@
 
 <div id="stamps" hidden></div>
 
+<div id="feedback" hidden>
+  <h2>発表はどうでしたか</h2>
+  <div>
+    <p class="q">感想（任意）</p>
+    <textarea id="body" maxlength="500" placeholder="書きたいことがあれば"></textarea>
+  </div>
+  <div>
+    <p class="q">ボタンを押したとき、気づいてからどれくらい経っていましたか</p>
+    <div class="delays" id="delays"></div>
+  </div>
+  <button id="send" type="button">送る</button>
+</div>
+
 <footer>
   <p id="status"></p>
   <p id="code"></p>
@@ -174,6 +241,10 @@
 
   const container = document.getElementById("buttons");
   const stampRow = document.getElementById("stamps");
+  const feedbackBox = document.getElementById("feedback");
+  const bodyField = document.getElementById("body");
+  const delayRow = document.getElementById("delays");
+  const sendButton = document.getElementById("send");
   const heading = document.getElementById("heading");
   const status = document.getElementById("status");
   const codeLabel = document.getElementById("code");
@@ -274,6 +345,102 @@
     }));
   };
 
+  // ---- 発表後の感想 ----
+  // 押下とは条件が逆。**終了していないと書けない。**
+  // 遅れの設問は、45秒という窓が妥当かを測るためにある（spec.md 9章）。
+
+  const DELAYS = [
+    { value: 0,  label: "すぐ押した" },
+    { value: 10, label: "10秒くらい" },
+    { value: 30, label: "30秒くらい" },
+    { value: 60, label: "1分以上" },
+    { value: -1, label: "覚えていない", wide: true }
+  ];
+  let chosenDelay = null;
+  let finishedSessionId = null;
+
+  const buildDelays = () => {
+    delayRow.replaceChildren(...DELAYS.map((option) => {
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className = "delay" + (option.wide ? " wide" : "");
+      el.textContent = option.label;
+      el.addEventListener("click", () => {
+        // もう一度押せば取り消せる。答えたくない人を縛らない
+        chosenDelay = chosenDelay === option.value ? null : option.value;
+        for (const other of delayRow.children) other.classList.remove("on");
+        if (chosenDelay !== null) el.classList.add("on");
+        refreshSend();
+      });
+      return el;
+    }));
+  };
+
+  const refreshSend = () => {
+    const written = bodyField.value.trim().length > 0;
+    sendButton.disabled = !written && chosenDelay === null;
+  };
+
+  // lookup_session は終了済みを返さないので、終了後の窓口が別に要る
+  const lookupFinished = async () => {
+    const response = await fetch(SUPABASE_URL + "/rest/v1/rpc/lookup_finished_session", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ p_code: code })
+    });
+    if (!response.ok) return null;
+    const rows = await response.json();
+    return rows.length ? rows[0] : null;
+  };
+
+  const sendFeedback = async () => {
+    const payload = { session_id: finishedSessionId, body: bodyField.value.trim() };
+    if (chosenDelay !== null) payload.press_delay = chosenDelay;
+
+    const response = await fetch(SUPABASE_URL + "/rest/v1/feedback", {
+      method: "POST",
+      headers: Object.assign({ "Prefer": "return=minimal" }, headers),
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) throw new Error("feedback failed: " + response.status);
+  };
+
+  sendButton.addEventListener("click", async () => {
+    if (sendButton.disabled) return;
+    sendButton.disabled = true;
+    setStatus("送っています…");
+    try {
+      await sendFeedback();
+      feedbackBox.hidden = true;
+      heading.textContent = "ありがとうございました";
+      setStatus("届きました", "ok");
+    } catch (error) {
+      setStatus("送れませんでした", "ng");
+      refreshSend();
+    }
+  });
+
+  bodyField.addEventListener("input", refreshSend);
+
+  // 終了後の画面。書ける窓が開いていればフォームを出す
+  const showFinished = async () => {
+    sessionId = null;
+    stampRow.hidden = true;
+    container.replaceChildren();
+    heading.textContent = "おつかれさまでした";
+    setStatus("");
+
+    const room = await lookupFinished().catch(() => null);
+    if (room && room.accepts_feedback) {
+      finishedSessionId = room.session_id;
+      buildDelays();
+      refreshSend();
+      feedbackBox.hidden = false;
+    } else {
+      heading.textContent = "この発表は終了しました";
+    }
+  };
+
   // ---- 描画 ----
 
   const render = () => {
@@ -339,13 +506,8 @@
     stampRow.hidden = false;
   };
 
-  const showClosed = (message) => {
-    sessionId = null;
-    stampRow.hidden = true;
-    heading.textContent = "終了しました";
-    setAllDisabled(true);
-    setStatus(message, "ng");
-  };
+  // 終了を検出したら、感想の画面へ切り替える
+  const showClosed = () => { showFinished(); };
 
   // ---- 押されたとき ----
 
@@ -358,7 +520,7 @@
       setStatus("確認しています…");
       try {
         const room = await lookup();
-        if (!room) { showClosed("この発表は終了しました"); return; }
+        if (!room) { showClosed(); return; }
         if (!room.has_started) { showWaiting(); return; }
         adopt(room);
         showReady();
@@ -382,7 +544,7 @@
       if (error.rejected) {
         const room = await lookup().catch(() => null);
         if (room && !room.has_started) { showWaiting(); }
-        else { showClosed("この発表は終了しました"); }
+        else { showClosed(); }
         return;
       }
       setStatus("送れませんでした", "ng");
@@ -408,8 +570,12 @@
     try {
       const room = await lookup();
       if (!room) {
-        heading.textContent = "見つかりませんでした";
-        setStatus("この発表は終了しているか、コードが違います", "ng");
+        // 終了済みかもしれない。感想の窓が開いていればそちらを出す
+        await showFinished();
+        if (feedbackBox.hidden) {
+          heading.textContent = "見つかりませんでした";
+          setStatus("この発表は終了しているか、コードが違います", "ng");
+        }
         return;
       }
       adopt(room);
