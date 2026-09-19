@@ -603,7 +603,8 @@
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) { stopWaitPolling(); stopLivePolling(); return; }
     if (!feedbackBox.hidden) return;          // 感想を書いている間は何もしない
-    if (sessionId) scheduleLivePoll(); else scheduleWaitPoll();
+    // **戻ってきたら待たずに見る。**裏にいる間に終わっているかもしれない。
+    if (sessionId) { stopLivePolling(); pollLive(); } else { stopWaitPolling(); pollWaiting(); }
   });
 
   const showWaiting = () => {
