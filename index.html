@@ -34,8 +34,12 @@
   html, body {
     margin: 0;
     height: 100%;
-    overflow: hidden;               /* 縦に短く。スクロールさせない */
+    overflow-x: hidden;
+    overflow-y: hidden;             /* 押す画面は縦に短く。スクロールさせない */
   }
+
+  /* CSS の display は UA の [hidden]{display:none} に勝つので、明示的に打ち消す */
+  [hidden] { display: none !important; }
 
   body {
     background: var(--bg);
@@ -135,13 +139,31 @@
     .stamp.sent { animation: none; }
   }
 
+  /* ---- 感想モード ----
+     発表が終わったら、押す画面ではなく「感想を書くページ」に切り替える。
+     ボタンの下に足すのではなく、main ごと畳んで場所を明け渡す。 */
+  body.writing main,
+  body.writing #stamps { display: none !important; }
+
+  body.writing {
+    justify-content: flex-start;
+    overflow-y: auto;               /* フォームは入りきらないのでスクロールさせる */
+    height: auto;
+    min-height: 100%;
+    padding-bottom: max(32px, env(safe-area-inset-bottom));
+  }
+
+  body.writing header { padding-top: 4px; }
+
   /* 発表後の感想フォーム。終了してから出る */
   #feedback {
     width: 100%;
+    max-width: 480px;
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 18px;
     text-align: left;
+    margin-top: 22px;
   }
   #feedback h2 { font-size: 15px; font-weight: 600; margin: 0; }
   #feedback .q { font-size: 13px; color: var(--muted); margin: 0 0 7px; }
@@ -246,6 +268,7 @@
   const delayRow = document.getElementById("delays");
   const sendButton = document.getElementById("send");
   const heading = document.getElementById("heading");
+  const lead = document.querySelector(".lead");
   const status = document.getElementById("status");
   const codeLabel = document.getElementById("code");
 
@@ -412,8 +435,10 @@
     try {
       await sendFeedback();
       feedbackBox.hidden = true;
+      document.body.classList.remove("writing");
       heading.textContent = "ありがとうございました";
-      setStatus("届きました", "ok");
+      lead.textContent = "発表者に届きました";
+      setStatus("");
     } catch (error) {
       setStatus("送れませんでした", "ng");
       refreshSend();
@@ -427,7 +452,6 @@
     sessionId = null;
     stampRow.hidden = true;
     container.replaceChildren();
-    heading.textContent = "おつかれさまでした";
     setStatus("");
 
     const room = await lookupFinished().catch(() => null);
@@ -435,9 +459,14 @@
       finishedSessionId = room.session_id;
       buildDelays();
       refreshSend();
+      // ボタンの画面ごと畳んで、感想を書くページにする
+      document.body.classList.add("writing");
+      heading.textContent = "おつかれさまでした";
+      lead.textContent = "書いたものは発表者にだけ届きます";
       feedbackBox.hidden = false;
     } else {
       heading.textContent = "この発表は終了しました";
+      lead.textContent = "感想の受付も終わっています";
     }
   };
 
@@ -489,15 +518,77 @@
     }, 1000);
   };
 
+  // ---- 待機中だけ、開始したかを見にいく ----
+  //
+  // 設計判断2（リアルタイム同期インフラを持たない）の狙いは
+  // 「**反応の表示**にリアルタイム性は要らない」ことで、
+  // 「開始したかどうか」の状態変化はその話とは別。
+  // 待っている人に「まもなく始まります」を押させて確かめさせるのは単に不親切だった。
+  //
+  // ただし **待機中だけ**。始まったら止める。
+  // 発表中は聴衆が聞くべき時間なので、端末に何もさせない。
+
+  const WAIT_POLL_MS = 3000;
+  const WAIT_GIVE_UP_MS = 20 * 60 * 1000;   // 20分待っても始まらなければ諦める
+  let waitTimer = null;
+  let waitStartedAt = 0;
+  let waitInterval = WAIT_POLL_MS;
+
+  const stopWaitPolling = () => {
+    if (waitTimer) clearTimeout(waitTimer);
+    waitTimer = null;
+  };
+
+  const scheduleWaitPoll = () => {
+    stopWaitPolling();
+    if (document.hidden) return;              // 画面を見ていない間は止める
+    waitTimer = setTimeout(pollWaiting, waitInterval);
+  };
+
+  const pollWaiting = async () => {
+    waitTimer = null;
+    if (sessionId) return;                    // もう始まっている
+
+    if (Date.now() - waitStartedAt > WAIT_GIVE_UP_MS) {
+      setStatus("まだ始まっていません。画面を開き直してください");
+      return;
+    }
+
+    try {
+      const room = await lookup();
+      waitInterval = WAIT_POLL_MS;            // 成功したら間隔を戻す
+      if (!room) { showClosed(); return; }
+      if (room.has_started) {
+        adopt(room);
+        showReady();
+        setStatus("始まりました", "ok");
+        if (navigator.vibrate) navigator.vibrate(30);
+        return;
+      }
+    } catch (error) {
+      waitInterval = Math.min(waitInterval * 2, 30000);   // 失敗したら間隔を広げる
+    }
+    scheduleWaitPoll();
+  };
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { stopWaitPolling(); return; }
+    if (!sessionId && feedbackBox.hidden) scheduleWaitPoll();
+  });
+
   const showWaiting = () => {
     sessionId = null;
     stampRow.hidden = true;
     heading.textContent = "まもなく始まります";
-    setAllDisabled(false);      // 押せるが、押すと状態を確認しにいく
+    setAllDisabled(true);       // 自動で切り替わるので、押させる必要がない
     setStatus("発表が始まるのを待っています");
+
+    if (!waitStartedAt) waitStartedAt = Date.now();
+    scheduleWaitPoll();
   };
 
   const showReady = () => {
+    stopWaitPolling();
     heading.textContent = buttons.length > 1
       ? "感じたものを押してください"
       : "わからなかったら押してください";
@@ -507,7 +598,7 @@
   };
 
   // 終了を検出したら、感想の画面へ切り替える
-  const showClosed = () => { showFinished(); };
+  const showClosed = () => { stopWaitPolling(); showFinished(); };
 
   // ---- 押されたとき ----
 
