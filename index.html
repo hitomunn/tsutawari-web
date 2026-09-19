@@ -529,8 +529,11 @@
   // 発表中は聴衆が聞くべき時間なので、端末に何もさせない。
 
   const WAIT_POLL_MS = 3000;
+  // 発表中は終了を拾うだけなので、急がない。間隔を広く取る
+  const LIVE_POLL_MS = 10000;
   const WAIT_GIVE_UP_MS = 20 * 60 * 1000;   // 20分待っても始まらなければ諦める
   let waitTimer = null;
+  let liveTimer = null;
   let waitStartedAt = 0;
   let waitInterval = WAIT_POLL_MS;
 
@@ -539,10 +542,35 @@
     waitTimer = null;
   };
 
+  const stopLivePolling = () => {
+    if (liveTimer) clearTimeout(liveTimer);
+    liveTimer = null;
+  };
+
   const scheduleWaitPoll = () => {
     stopWaitPolling();
     if (document.hidden) return;              // 画面を見ていない間は止める
     waitTimer = setTimeout(pollWaiting, waitInterval);
+  };
+
+  const scheduleLivePoll = () => {
+    stopLivePolling();
+    if (document.hidden) return;
+    liveTimer = setTimeout(pollLive, LIVE_POLL_MS);
+  };
+
+  // 発表中。終了を拾って感想のページへ送り出すためだけに見にいく。
+  // 押されるのを待つと、押さずに聞いていた人がボタンの画面に取り残される。
+  const pollLive = async () => {
+    liveTimer = null;
+    if (!sessionId) return;
+    try {
+      const room = await lookup();
+      if (!room) { showClosed(); return; }    // 終了した
+    } catch (error) {
+      // 通信が切れただけかもしれない。押下は別経路で弾かれるので、黙って続ける
+    }
+    scheduleLivePoll();
   };
 
   const pollWaiting = async () => {
@@ -572,8 +600,9 @@
   };
 
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) { stopWaitPolling(); return; }
-    if (!sessionId && feedbackBox.hidden) scheduleWaitPoll();
+    if (document.hidden) { stopWaitPolling(); stopLivePolling(); return; }
+    if (!feedbackBox.hidden) return;          // 感想を書いている間は何もしない
+    if (sessionId) scheduleLivePoll(); else scheduleWaitPoll();
   });
 
   const showWaiting = () => {
@@ -589,6 +618,7 @@
 
   const showReady = () => {
     stopWaitPolling();
+    scheduleLivePoll();
     heading.textContent = buttons.length > 1
       ? "感じたものを押してください"
       : "わからなかったら押してください";
@@ -598,7 +628,7 @@
   };
 
   // 終了を検出したら、感想の画面へ切り替える
-  const showClosed = () => { stopWaitPolling(); showFinished(); };
+  const showClosed = () => { stopWaitPolling(); stopLivePolling(); showFinished(); };
 
   // ---- 押されたとき ----
 
